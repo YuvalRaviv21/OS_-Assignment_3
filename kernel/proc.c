@@ -688,3 +688,66 @@ procdump(void)
     printf("\n");
   }
 }
+
+uint64 map_shared_pages(struct proc* src_proc, struct proc* dst_proc, uint64 src_va, uint64 size) {
+  uint64 page;
+  uint64 offset = src_va - PGROUNDDOWN(src_va);
+  uint64 dst_va = PGROUNDUP(dst_proc->sz);
+  pte_t *src_pte;
+  int allocated_pages = 0;
+
+  for (page = PGROUNDDOWN(src_va); page < PGROUNDUP(src_va + size); page += PGSIZE) {
+    src_pte = walk(src_proc->pagetable, page, 0);
+    if (src_pte == 0 || !(PTE_FLAGS(*src_pte) & PTE_V)) {
+      unmap_shared_pages(dst_proc, dst_va, allocated_pages * PGSIZE);
+      return -1;
+    }
+
+    if (mappages(dst_proc->pagetable, dst_va, PGSIZE, PTE2PA(*src_pte), PTE_FLAGS(*src_pte) | PTE_S) < 0) {
+      unmap_shared_pages(dst_proc, dst_va, allocated_pages * PGSIZE);
+      return -1;
+    }
+
+    dst_va += PGSIZE;
+    allocated_pages++;
+  }
+
+  dst_proc->sz += allocated_pages * PGSIZE;
+
+
+  return PGROUNDUP(dst_proc->sz) - allocated_pages * PGSIZE + offset; 
+}
+
+uint64 unmap_shared_pages(struct proc* p, uint64 addr, uint64 size) {
+  uint64 page;
+
+  if (p->sz < size) {
+    return -1;
+  }
+
+  for (page = PGROUNDDOWN(addr); page < PGROUNDUP(addr + size); page += PGSIZE) {
+    pte_t *pte = walk(p->pagetable, page, 0);
+    if (pte == 0 || !(PTE_FLAGS(*pte) & PTE_S)) {
+      return -1;
+    }
+  }
+
+  uvmunmap(p->pagetable, PGROUNDDOWN(addr), size / PGSIZE, 0);
+  p->sz -= size;
+
+  return 0;
+}
+
+
+struct proc* find_proc(int pid) {
+  struct proc* p;
+  for (p = proc; p < &proc[NPROC]; p++) {
+    acquire(&p->lock);
+    if (p->pid == pid) {
+      release(&p->lock);
+      return p;
+    }
+    release(&p->lock);
+  }
+  return 0;
+}
